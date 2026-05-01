@@ -613,11 +613,17 @@ EOF
 # Entry point
 # ---------------------------------------------------------------------------
 
-# Parse `--port N` out of $@, leaving the subcommand at $1. The flag may
-# appear before or after the subcommand. PORT env var still wins; the flag
-# is just sugar for one-off interactive runs.
+# Parse `--port N` out of $@, leaving the first non-flag argument as the
+# subcommand. The flag may appear before or after the subcommand. PORT env
+# var still wins; the flag is just sugar for one-off interactive runs.
+#
+# We resolve the subcommand into a single scalar (PARSED_SUB) instead of
+# building an array. macOS ships Bash 3.2, where `set -u` plus expanding an
+# empty array (`"${rest[@]}"`) raises "unbound variable" — hitting users
+# who curl-pipe into the system bash with no arguments. A scalar avoids
+# the entire empty-array minefield.
 parse_port_flag() {
-  local rest=()
+  PARSED_SUB=""
   while (( $# > 0 )); do
     case "$1" in
       --port)
@@ -633,18 +639,21 @@ parse_port_flag() {
         shift
         ;;
       *)
-        rest+=("$1")
+        # First non-flag positional wins as the subcommand. Any extras
+        # are silently ignored (we never accept multi-positional args).
+        if [[ -z "$PARSED_SUB" ]]; then
+          PARSED_SUB="$1"
+        fi
         shift
         ;;
     esac
   done
-  PARSED_ARGS=("${rest[@]}")
 }
 
 main() {
-  PARSED_ARGS=()
+  PARSED_SUB=""
   parse_port_flag "$@"
-  local sub="${PARSED_ARGS[0]:-install}"
+  local sub="${PARSED_SUB:-install}"
   case "$sub" in
     install)   cmd_install ;;
     update)    cmd_update ;;
