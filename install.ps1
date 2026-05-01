@@ -25,7 +25,11 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('install', 'update', 'uninstall', 'status', 'start', 'stop', 'help')]
-    [string]$Subcommand = 'install'
+    [string]$Subcommand = 'install',
+
+    # --port N flag (alternative to the PORT env var). Skips the install prompt.
+    [Parameter()]
+    [int]$Port = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,11 +40,15 @@ $ErrorActionPreference = 'Stop'
 
 $Script:Image            = 'ghcr.io/fablab-westharima/digicode-compile-api:latest'
 $Script:ContainerName    = 'digicode-compile-api'
-$Script:Port             = 3001
+$Script:DefaultPort      = 3001
+$Script:DigiCodeUiPort   = 3001  # the port DigiCode's UI toggle hard-codes today
 $Script:InstallDir       = Join-Path $env:USERPROFILE '.digicode\compile-server'
 $Script:ComposeFile      = Join-Path $Script:InstallDir 'docker-compose.yml'
-$Script:HealthUrl        = "http://localhost:$($Script:Port)/health"
 $Script:HealthTimeoutSec = 60
+
+# Resolved host port for the running container — set by Pick-Port during
+# install or by Read-PortFromCompose for subsequent commands.
+$Script:Port             = if ($env:PORT) { [int]$env:PORT } else { 0 }
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -50,6 +58,157 @@ function Write-Info  { param([string]$Msg) Write-Host "▶ $Msg" -ForegroundColo
 function Write-Ok    { param([string]$Msg) Write-Host "✅ $Msg" -ForegroundColor Green }
 function Write-Warn2 { param([string]$Msg) Write-Host "⚠️  $Msg" -ForegroundColor Yellow }
 function Write-Err   { param([string]$Msg) Write-Host "❌ $Msg" -ForegroundColor Red }
+
+# ---------------------------------------------------------------------------
+# Port handling
+# ---------------------------------------------------------------------------
+
+function Test-PortFree {
+    param([Parameter(Mandatory)] [int]$PortNumber)
+
+    # Modern Windows (8.1+ / Server 2012 R2+) ships Get-NetTCPConnection.
+    try {
+        $listener = Get-NetTCPConnection `
+            -LocalPort $PortNumber `
+            -State Listen `
+            -ErrorAction Stop
+        if ($listener) { return $false }
+    } catch {
+        # No listener found → port is free
+        return $true
+    }
+    return $true
+}
+
+# Walk upward from $StartPort until we find a free port, capped at +100.
+function Find-NextFreePort {
+    param([int]$StartPort = ($Script:DefaultPort + 1))
+    for ($p = $StartPort; $p -lt ($StartPort + 100); $p++) {
+        if (Test-PortFree -PortNumber $p) { return $p }
+    }
+    return 0
+}
+
+# Best-effort: return "<pid> (<process>)" of whoever holds the LISTEN socket
+# on $PortNumber, or empty string when we can't resolve it.
+function Get-PortOwner {
+    param([Parameter(Mandatory)] [int]$PortNumber)
+    try {
+        $conn = Get-NetTCPConnection `
+            -LocalPort $PortNumber `
+            -State Listen `
+            -ErrorAction Stop |
+            Select-Object -First 1
+        if (-not $conn) { return '' }
+        $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+        if ($proc) {
+            return "$($conn.OwningProcess) ($($proc.ProcessName))"
+        }
+        return "$($conn.OwningProcess)"
+    } catch {
+        return ''
+    }
+}
+
+# Decide which host port to expose. Always prompts the user (per
+# 2026-05-01 user direction) unless $Script:Port is already set (PORT env
+# var or --port flag) or the host is non-interactive.
+# Sets $Script:Port; returns $true on success, $false on user abort.
+function Pick-Port {
+    if ($Script:Port -gt 0) {
+        if ($Script:Port -lt 1024 -or $Script:Port -gt 65535) {
+            Write-Err "Invalid port $($Script:Port): must be 1024-65535."
+            return $false
+        }
+        if (-not (Test-PortFree -PortNumber $Script:Port)) {
+            $owner = Get-PortOwner -PortNumber $Script:Port
+            Write-Err "Port $($Script:Port) is already in use$(if ($owner) { ' by ' + $owner })."
+            Write-Err "Pick a different port or stop the conflicting process."
+            return $false
+        }
+        Write-Info "Using port $($Script:Port) (set via -Port / PORT env)."
+        return $true
+    }
+
+    # Probe the default port and prepare a smart suggested default.
+    $default = 0
+    if (Test-PortFree -PortNumber $Script:DefaultPort) {
+        Write-Ok "Port $($Script:DefaultPort) is available."
+        $default = $Script:DefaultPort
+    } else {
+        $owner = Get-PortOwner -PortNumber $Script:DefaultPort
+        Write-Warn2 "Port $($Script:DefaultPort) is already in use$(if ($owner) { ' by ' + $owner })."
+        Write-Warn2 "Binding the compile-server here would conflict with that process."
+        Write-Info "Searching for the next free port..."
+        $default = Find-NextFreePort -StartPort ($Script:DefaultPort + 1)
+        if (-not $default) {
+            Write-Err "No free port found in $($Script:DefaultPort)-$($Script:DefaultPort + 100). Free a port and retry."
+            return $false
+        }
+        Write-Info "Suggested alternate: $default"
+    }
+
+    # Non-interactive guard. PowerShell exposes [Environment]::UserInteractive,
+    # but `irm | iex` sometimes still has it set to true while stdin is bound
+    # to the pipe. Read-Host falls through cleanly in iex if a console is
+    # attached, so we just rely on it and trap the error case.
+    if (-not [Environment]::UserInteractive) {
+        Write-Err "Cannot prompt for the port: the session is not interactive."
+        Write-Host ""
+        Write-Host "  Set PORT explicitly to skip the prompt:"
+        Write-Host "      `$env:PORT=$default; irm <installer-url> | iex"
+        Write-Host ""
+        return $false
+    }
+
+    while ($true) {
+        $reply = Read-Host "Enter port to use [$default] (Enter to accept, 'q' to abort)"
+        if ($reply -eq 'q' -or $reply -eq 'Q') {
+            Write-Info "Aborted by user."
+            return $false
+        }
+        if ([string]::IsNullOrWhiteSpace($reply)) {
+            $Script:Port = $default
+            return $true
+        }
+        if ($reply -notmatch '^[0-9]+$') {
+            Write-Err "Invalid port: must be an integer in 1024-65535. Try again."
+            continue
+        }
+        $candidate = [int]$reply
+        if ($candidate -lt 1024 -or $candidate -gt 65535) {
+            Write-Err "Invalid port: must be 1024-65535. Try again."
+            continue
+        }
+        if (-not (Test-PortFree -PortNumber $candidate)) {
+            $who = Get-PortOwner -PortNumber $candidate
+            Write-Err "Port $candidate is also in use$(if ($who) { ' (' + $who + ')' }). Try another."
+            continue
+        }
+        $Script:Port = $candidate
+        return $true
+    }
+}
+
+# Read the active host port from an existing docker-compose.yml. Used by
+# update / status / start / stop so they don't have to re-prompt.
+function Read-PortFromCompose {
+    if (-not (Test-Path $Script:ComposeFile)) {
+        $Script:Port = $Script:DefaultPort
+        return
+    }
+    $line = Select-String -Path $Script:ComposeFile -Pattern '^\s+-\s+"(\d+):\d+"' |
+        Select-Object -First 1
+    if ($line -and $line.Matches[0].Groups.Count -ge 2) {
+        $Script:Port = [int]$line.Matches[0].Groups[1].Value
+    } else {
+        $Script:Port = $Script:DefaultPort
+    }
+}
+
+function Get-HealthUrl {
+    return "http://localhost:$($Script:Port)/health"
+}
 
 # ---------------------------------------------------------------------------
 # Docker / Compose preflight
@@ -121,20 +280,21 @@ function Write-ComposeFile {
     $content = @"
 # Generated by DigiCode local-compile installer.
 # Edit at your own risk - re-running 'install' overwrites this file.
+# Host port: $($Script:Port) (chosen interactively, override with PORT env var or -Port flag).
 services:
   digicode-compile-api:
     image: $($Script:Image)
     container_name: $($Script:ContainerName)
     ports:
-      - "$($Script:Port):$($Script:Port)"
+      # The container listens on its built-in default (3001); we map it
+      # to whatever host port the user picked.
+      - "$($Script:Port):3001"
     restart: unless-stopped
-    environment:
-      - PORT=$($Script:Port)
     volumes:
       - digicode-projects:/opt/digicode-compile/projects
       - digicode-cache:/opt/digicode-compile/cache
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:$($Script:Port)/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -157,13 +317,14 @@ volumes:
 # ---------------------------------------------------------------------------
 
 function Wait-ForHealth {
+    $url = Get-HealthUrl
     Write-Info "Waiting for compile-server to come up (timeout $($Script:HealthTimeoutSec)s)..."
     $deadline = (Get-Date).AddSeconds($Script:HealthTimeoutSec)
     while ((Get-Date) -lt $deadline) {
         try {
-            $resp = Invoke-WebRequest -Uri $Script:HealthUrl -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
             if ($resp.Content -match '"status":"ok"') {
-                Write-Ok "Compile-server is healthy at $($Script:HealthUrl)"
+                Write-Ok "Compile-server is healthy at $url"
                 return $true
             }
         } catch {}
@@ -176,6 +337,39 @@ function Wait-ForHealth {
     return $false
 }
 
+function Write-InstallSummary {
+    Write-Host ""
+    Write-Ok "DigiCode local compile-server is ready."
+    Write-Host ""
+
+    if ($Script:Port -ne $Script:DigiCodeUiPort) {
+        Write-Warn2 "DigiCode UI mismatch:"
+        Write-Host "    The [ローカルサーバー] toggle in DigiCode currently hard-codes"
+        Write-Host "    http://localhost:$($Script:DigiCodeUiPort), but you chose port $($Script:Port)."
+        Write-Host "    Until the frontend port-setting UI ships (post-MVP), the toggle"
+        Write-Host "    won't reach this server. You can still call /api/compile directly:"
+        Write-Host "      curl http://localhost:$($Script:Port)/health"
+        Write-Host "    Or free port $($Script:DigiCodeUiPort) and re-run"
+        Write-Host "    '.\install.ps1 uninstall' then '.\install.ps1 install' to switch back."
+        Write-Host ""
+    }
+
+    Write-Host "Next steps:" -ForegroundColor Cyan
+    Write-Host "  1. Open DigiCode in your browser (https://code.fablab-westharima.jp)"
+    if ($Script:Port -eq $Script:DigiCodeUiPort) {
+        Write-Host "  2. Click the down-arrow next to the [書き込み] button"
+        Write-Host "  3. Select [ローカルサーバー]"
+    } else {
+        Write-Host "  2. (UI integration unavailable on this port - see warning above)"
+    }
+    Write-Host ""
+    Write-Host "Manage the server:" -ForegroundColor DarkGray
+    Write-Host "  - Status:    .\install.ps1 status"
+    Write-Host "  - Stop:      .\install.ps1 stop"
+    Write-Host "  - Update:    .\install.ps1 update"
+    Write-Host "  - Uninstall: .\install.ps1 uninstall"
+}
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
@@ -184,7 +378,9 @@ function Cmd-Install {
     Require-Docker
     Require-DockerRunning
 
-    Write-Info "Writing compose file to $($Script:ComposeFile)"
+    if (-not (Pick-Port)) { exit 1 }
+
+    Write-Info "Writing compose file to $($Script:ComposeFile) (host port $($Script:Port))"
     Write-ComposeFile
 
     Write-Info "Pulling $($Script:Image) (~1 GB compressed, ~3.8 GB extracted on first run)..."
@@ -195,19 +391,7 @@ function Cmd-Install {
 
     if (-not (Wait-ForHealth)) { exit 1 }
 
-    Write-Host ""
-    Write-Ok "DigiCode local compile-server is ready."
-    Write-Host ""
-    Write-Host "Next steps:" -ForegroundColor Cyan
-    Write-Host "  1. Open DigiCode in your browser (https://code.fablab-westharima.jp)"
-    Write-Host "  2. Click the down-arrow next to the [書き込み] button"
-    Write-Host "  3. Select [ローカルサーバー]"
-    Write-Host ""
-    Write-Host "Manage the server:" -ForegroundColor DarkGray
-    Write-Host "  - Status:    .\install.ps1 status"
-    Write-Host "  - Stop:      .\install.ps1 stop"
-    Write-Host "  - Update:    .\install.ps1 update"
-    Write-Host "  - Uninstall: .\install.ps1 uninstall"
+    Write-InstallSummary
 }
 
 function Cmd-Update {
@@ -218,9 +402,10 @@ function Cmd-Update {
         Write-Host "  Run '.\install.ps1 install' first."
         exit 1
     }
+    Read-PortFromCompose
     Write-Info "Pulling latest image..."
     Invoke-DockerCompose -f $Script:ComposeFile pull
-    Write-Info "Recreating container..."
+    Write-Info "Recreating container (host port $($Script:Port))..."
     Invoke-DockerCompose -f $Script:ComposeFile up -d
     Wait-ForHealth | Out-Null
 }
@@ -268,19 +453,23 @@ function Cmd-Status {
         return
     }
 
+    Read-PortFromCompose
+
     $state = (docker inspect -f '{{.State.Status}}' $Script:ContainerName 2>$null)
     $image = (docker inspect -f '{{.Config.Image}}' $Script:ContainerName 2>$null)
+    $url = Get-HealthUrl
 
     Write-Host "Container:    $($Script:ContainerName)" -ForegroundColor Cyan
     Write-Host "State:        $state"
     Write-Host "Image:        $image"
-    Write-Host "Health URL:   $($Script:HealthUrl)"
+    Write-Host "Host port:    $($Script:Port)"
+    Write-Host "Health URL:   $url"
     Write-Host "Compose:      $($Script:ComposeFile)"
     Write-Host ""
 
     if ($state -eq 'running') {
         try {
-            $resp = Invoke-WebRequest -Uri $Script:HealthUrl -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
             if ($resp.Content -match '"status":"ok"') {
                 Write-Ok "Health check passed."
             } else {
@@ -299,6 +488,7 @@ function Cmd-Start {
         Write-Err "Compose file not found - run 'install' first."
         exit 1
     }
+    Read-PortFromCompose
     Invoke-DockerCompose -f $Script:ComposeFile start
     Wait-ForHealth | Out-Null
 }
@@ -314,25 +504,37 @@ function Cmd-Stop {
 }
 
 function Cmd-Help {
+    $shownPort = if ($Script:Port -gt 0) { $Script:Port } else { $Script:DefaultPort }
     Write-Host @"
 DigiCode local compile-server installer
 
-Usage: .\install.ps1 [subcommand]
+Usage: .\install.ps1 [subcommand] [-Port N]
 
 Subcommands:
-  install     Pull the image, generate compose file, start the container,
-              then verify /health (default if no subcommand given)
-  update      Pull the latest image and recreate the container
+  install     Pull the image, ask which host port to use, generate the
+              compose file, start the container, verify /health
+              (default if no subcommand given)
+  update      Pull the latest image and recreate the container,
+              keeping the same port and volumes as the previous install
   uninstall   Stop the container, remove volumes and install dir
               (asks before deleting the image)
-  status      Show container state, image, and a live health check
+  status      Show container state, image, host port, and a live health check
   start       Start an existing (stopped) container
   stop        Stop the container without removing it
   help        Show this message
 
+Port selection:
+  - install always asks which host port to use, with a smart default
+    ($($Script:DefaultPort) if free, or the next free port if $($Script:DefaultPort) is taken).
+  - Pass -Port N or set `$env:PORT=N to skip the prompt
+    (useful when piping irm | iex where stdin is not interactive).
+  - update / status / start / stop read the active port from the
+    generated compose file, so they stay in sync automatically.
+
 Install dir:    $($Script:InstallDir)
 Image:          $($Script:Image)
-Health URL:     $($Script:HealthUrl)
+Default port:   $($Script:DefaultPort)  (DigiCode UI also targets this port)
+Health URL:     http://localhost:$shownPort/health
 
 Docs (5 langs): https://code.fablab-westharima.jp/docs/local-compile-server
 "@ -ForegroundColor Cyan
@@ -341,6 +543,11 @@ Docs (5 langs): https://code.fablab-westharima.jp/docs/local-compile-server
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+# `-Port N` from the param block wins over the PORT env var (which we
+# captured into $Script:Port at the top of the file). Re-apply only when
+# the user passed an explicit -Port value.
+if ($Port -gt 0) { $Script:Port = $Port }
 
 switch ($Subcommand) {
     'install'   { Cmd-Install }

@@ -21,11 +21,15 @@ set -euo pipefail
 
 readonly IMAGE="ghcr.io/fablab-westharima/digicode-compile-api:latest"
 readonly CONTAINER_NAME="digicode-compile-api"
-readonly PORT=3001
+readonly DEFAULT_PORT=3001
 readonly INSTALL_DIR="${HOME}/.digicode/compile-server"
 readonly COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
-readonly HEALTH_URL="http://localhost:${PORT}/health"
 readonly HEALTH_TIMEOUT_SEC=60
+readonly DIGICODE_UI_PORT=3001  # the port DigiCode's UI toggle hard-codes today
+
+# Resolved port for the running container — set by pick_port() during install
+# or by read_port_from_compose() for subsequent commands.
+PORT="${PORT:-}"
 
 # ANSI colours (disabled when not a tty)
 if [[ -t 1 ]]; then
@@ -54,6 +58,166 @@ info() { printf "%s▶%s %s\n" "$C_BLUE" "$C_RESET" "$*"; }
 ok()   { printf "%s✅%s %s\n" "$C_GREEN" "$C_RESET" "$*"; }
 warn() { printf "%s⚠️ %s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
 err()  { printf "%s❌%s %s\n" "$C_RED" "$C_RESET" "$*" >&2; }
+
+# ---------------------------------------------------------------------------
+# Port handling
+# ---------------------------------------------------------------------------
+
+# Returns 0 if the port has no LISTEN-state TCP socket on localhost, 1 if it
+# does. Tries lsof (best diagnostics, ships with macOS, common on Linux),
+# then nc, and finally a pure-bash /dev/tcp probe so the script still works
+# on minimal Linux images.
+is_port_free() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof -nP -i ":$port" -sTCP:LISTEN >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    if nc -z localhost "$port" >/dev/null 2>&1; then
+      return 1
+    fi
+    return 0
+  fi
+  # Bash builtin: try opening a TCP connection to localhost:port.
+  if (exec 3<>/dev/tcp/localhost/"$port") 2>/dev/null; then
+    exec 3>&- 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# Walk upward from $1 (default DEFAULT_PORT+1) until we find a free port,
+# capped at +100 to avoid infinite loops on a fully booked machine.
+find_next_free_port() {
+  local start="${1:-$((DEFAULT_PORT + 1))}"
+  local p
+  for ((p = start; p < start + 100; p++)); do
+    if is_port_free "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Best-effort: print "<pid> (<process>)" of whoever holds the LISTEN socket
+# on $1, or empty string if we can't tell. Only lsof is guaranteed to give
+# us this; other tools fall back to silence.
+who_uses_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -i ":$port" -sTCP:LISTEN 2>/dev/null \
+      | awk 'NR==2 {print $2 " (" $1 ")"}' \
+      | head -1
+  fi
+}
+
+# Decide which host port to expose. Always prompts the user (per
+# 2026-05-01 user direction: "3001 が使用されていようがいまいがユーザーに認証求めた方がいい")
+# unless PORT is set in the environment or stdin is not a TTY.
+#
+# Sets the PORT global; returns 0 on success, 1 on user abort or invalid env.
+pick_port() {
+  # Caller-supplied PORT (env var or --port flag) skips the prompt entirely.
+  if [[ -n "${PORT:-}" ]]; then
+    if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
+      err "Invalid PORT='${PORT}' (must be an integer in 1024-65535)."
+      return 1
+    fi
+    if ! is_port_free "$PORT"; then
+      local owner; owner="$(who_uses_port "$PORT")"
+      err "Port $PORT is already in use${owner:+ by $owner}."
+      err "Pick a different port or stop the conflicting process."
+      return 1
+    fi
+    info "Using port $PORT (set via environment)."
+    return 0
+  fi
+
+  # No env override: probe DEFAULT_PORT and present the right prompt.
+  local default
+  if is_port_free "$DEFAULT_PORT"; then
+    ok "Port ${DEFAULT_PORT} is available."
+    default="$DEFAULT_PORT"
+  else
+    local owner; owner="$(who_uses_port "$DEFAULT_PORT")"
+    warn "Port ${DEFAULT_PORT} is already in use${owner:+ by $owner}."
+    warn "Binding the compile-server here would conflict with that process."
+    info "Searching for the next free port…"
+    if ! default="$(find_next_free_port $((DEFAULT_PORT + 1)))"; then
+      err "No free port found in ${DEFAULT_PORT}-$((DEFAULT_PORT + 100)). Free a port and retry."
+      return 1
+    fi
+    info "Suggested alternate: ${default}"
+  fi
+
+  # Non-TTY guard: `curl ... | bash` ties stdin to the curl pipe so `read`
+  # would deadlock. Tell the user how to re-run interactively (or set PORT).
+  if [[ ! -t 0 ]]; then
+    err "Cannot prompt for the port: stdin is not a terminal."
+    echo
+    echo "  Re-run interactively (preferred):"
+    echo "      bash <(curl -fsSL <installer-url>)"
+    echo
+    echo "  Or set PORT explicitly (skips the prompt):"
+    echo "      PORT=${default} bash -c \"\$(curl -fsSL <installer-url>)\""
+    echo
+    return 1
+  fi
+
+  local prompt_msg="Enter port to use [${default}] (Enter to accept, 'q' to abort): "
+  while true; do
+    local reply
+    read -r -p "$prompt_msg" reply
+    case "$reply" in
+      q|Q)
+        info "Aborted by user."
+        return 1
+        ;;
+      "")
+        PORT="$default"
+        return 0
+        ;;
+      *)
+        if [[ ! "$reply" =~ ^[0-9]+$ ]] || (( reply < 1024 || reply > 65535 )); then
+          err "Invalid port: must be an integer in 1024-65535. Try again."
+          continue
+        fi
+        if ! is_port_free "$reply"; then
+          local who; who="$(who_uses_port "$reply")"
+          err "Port $reply is also in use${who:+ ($who)}. Try another."
+          continue
+        fi
+        PORT="$reply"
+        return 0
+        ;;
+    esac
+  done
+}
+
+# Read the active host port from an existing docker-compose.yml. Used by
+# the post-install subcommands (status / start / stop / update) so they
+# don't have to know about pick_port.
+read_port_from_compose() {
+  if [[ ! -f "$COMPOSE_FILE" ]]; then
+    PORT="$DEFAULT_PORT"
+    return 1
+  fi
+  local p
+  # Match the first "  - "HOST:CONTAINER"" entry under ports:.
+  p="$(grep -oE '^[[:space:]]*-[[:space:]]*"[0-9]+:[0-9]+"' "$COMPOSE_FILE" \
+       | head -1 \
+       | grep -oE '[0-9]+' \
+       | head -1)"
+  PORT="${p:-$DEFAULT_PORT}"
+}
+
+health_url() {
+  echo "http://localhost:${PORT}/health"
+}
 
 # ---------------------------------------------------------------------------
 # Environment detection
@@ -191,20 +355,21 @@ write_compose_file() {
   cat > "$COMPOSE_FILE" <<EOF
 # Generated by DigiCode local-compile installer.
 # Edit at your own risk — re-running 'install' overwrites this file.
+# Host port: ${PORT} (chosen interactively, override with PORT env var or --port flag).
 services:
   digicode-compile-api:
     image: ${IMAGE}
     container_name: ${CONTAINER_NAME}
     ports:
-      - "${PORT}:${PORT}"
+      # The container listens on its built-in default (3001); we map it
+      # to whatever host port the user picked.
+      - "${PORT}:3001"
     restart: unless-stopped
-    environment:
-      - PORT=${PORT}
     volumes:
       - digicode-projects:/opt/digicode-compile/projects
       - digicode-cache:/opt/digicode-compile/cache
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:${PORT}/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -226,11 +391,12 @@ EOF
 # ---------------------------------------------------------------------------
 
 wait_for_health() {
+  local url; url="$(health_url)"
   info "Waiting for compile-server to come up (timeout ${HEALTH_TIMEOUT_SEC}s)…"
   local end=$(( $(date +%s) + HEALTH_TIMEOUT_SEC ))
   while (( $(date +%s) < end )); do
-    if curl -fsS "$HEALTH_URL" 2>/dev/null | grep -q '"status":"ok"'; then
-      ok "Compile-server is healthy at ${HEALTH_URL}"
+    if curl -fsS "$url" 2>/dev/null | grep -q '"status":"ok"'; then
+      ok "Compile-server is healthy at ${url}"
       return 0
     fi
     sleep 2
@@ -242,6 +408,41 @@ wait_for_health() {
   return 1
 }
 
+# Print the post-install summary, including a UI-mismatch warning when the
+# chosen port is not what DigiCode's "ローカルサーバー" toggle hard-codes.
+print_install_summary() {
+  echo
+  ok "${C_BOLD}DigiCode local compile-server is ready.${C_RESET}"
+  echo
+
+  if (( PORT != DIGICODE_UI_PORT )); then
+    warn "${C_BOLD}DigiCode UI mismatch:${C_RESET}"
+    echo "    The 「ローカルサーバー」 toggle in DigiCode currently hard-codes"
+    echo "    http://localhost:${DIGICODE_UI_PORT}, but you chose port ${PORT}."
+    echo "    Until the frontend port-setting UI ships (post-MVP), the toggle"
+    echo "    won't reach this server. You can still call /api/compile directly:"
+    echo "      curl http://localhost:${PORT}/health"
+    echo "    Or free port ${DIGICODE_UI_PORT} (kill whoever holds it) and re-run"
+    echo "    'bash $0 uninstall' then 'bash $0 install' to switch back."
+    echo
+  fi
+
+  echo "${C_BOLD}Next steps:${C_RESET}"
+  echo "  1. Open DigiCode in your browser (https://code.fablab-westharima.jp)"
+  if (( PORT == DIGICODE_UI_PORT )); then
+    echo "  2. Click the ▼ next to the「書き込み」button"
+    echo "  3. Select「ローカルサーバー」"
+  else
+    echo "  2. (UI integration unavailable on this port — see warning above)"
+  fi
+  echo
+  echo "${C_DIM}Manage the server:${C_RESET}"
+  echo "  • Status:    bash $0 status"
+  echo "  • Stop:      bash $0 stop"
+  echo "  • Update:    bash $0 update"
+  echo "  • Uninstall: bash $0 uninstall"
+}
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
@@ -250,7 +451,11 @@ cmd_install() {
   require_docker
   require_docker_running
 
-  info "Writing compose file to ${COMPOSE_FILE}"
+  if ! pick_port; then
+    exit 1
+  fi
+
+  info "Writing compose file to ${COMPOSE_FILE} (host port ${PORT})"
   write_compose_file
 
   info "Pulling ${IMAGE} (≈1 GB compressed, ≈3.8 GB extracted on first run)…"
@@ -263,19 +468,7 @@ cmd_install() {
     exit 1
   fi
 
-  echo
-  ok "${C_BOLD}DigiCode local compile-server is ready.${C_RESET}"
-  echo
-  echo "${C_BOLD}Next steps:${C_RESET}"
-  echo "  1. Open DigiCode in your browser (https://code.fablab-westharima.jp)"
-  echo "  2. Click the ▼ next to the「書き込み」button"
-  echo "  3. Select「ローカルサーバー」"
-  echo
-  echo "${C_DIM}Manage the server:${C_RESET}"
-  echo "  • Status:    bash $0 status"
-  echo "  • Stop:      bash $0 stop"
-  echo "  • Update:    bash $0 update"
-  echo "  • Uninstall: bash $0 uninstall"
+  print_install_summary
 }
 
 cmd_update() {
@@ -286,9 +479,10 @@ cmd_update() {
     echo "  Run 'bash $0 install' first."
     exit 1
   fi
+  read_port_from_compose
   info "Pulling latest image…"
   docker_compose -f "$COMPOSE_FILE" pull
-  info "Recreating container…"
+  info "Recreating container (host port ${PORT})…"
   docker_compose -f "$COMPOSE_FILE" up -d
   wait_for_health
 }
@@ -338,19 +532,23 @@ cmd_status() {
     return 1
   fi
 
+  read_port_from_compose
+
   local state image
   state="$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo unknown)"
   image="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER_NAME" 2>/dev/null || echo unknown)"
 
+  local url; url="$(health_url)"
   echo "${C_BOLD}Container:${C_RESET}    ${CONTAINER_NAME}"
   echo "${C_BOLD}State:${C_RESET}        ${state}"
   echo "${C_BOLD}Image:${C_RESET}        ${image}"
-  echo "${C_BOLD}Health URL:${C_RESET}   ${HEALTH_URL}"
+  echo "${C_BOLD}Host port:${C_RESET}    ${PORT}"
+  echo "${C_BOLD}Health URL:${C_RESET}   ${url}"
   echo "${C_BOLD}Compose:${C_RESET}      ${COMPOSE_FILE}"
   echo
 
   if [[ "$state" == "running" ]]; then
-    if curl -fsS "$HEALTH_URL" 2>/dev/null | grep -q '"status":"ok"'; then
+    if curl -fsS "$url" 2>/dev/null | grep -q '"status":"ok"'; then
       ok "Health check passed."
     else
       warn "Container is running but /health is not responding (still starting?)."
@@ -365,6 +563,7 @@ cmd_start() {
     err "Compose file not found — run 'install' first."
     exit 1
   fi
+  read_port_from_compose
   docker_compose -f "$COMPOSE_FILE" start
   wait_for_health
 }
@@ -380,25 +579,37 @@ cmd_stop() {
 }
 
 cmd_help() {
+  local current_port="${PORT:-$DEFAULT_PORT}"
   cat <<EOF
 ${C_BOLD}DigiCode local compile-server installer${C_RESET}
 
-Usage: bash $0 [subcommand]
+Usage: bash $0 [subcommand] [--port N]
 
 Subcommands:
-  install     Pull the image, generate compose file, start the container,
-              then verify /health (default if no subcommand given)
-  update      Pull the latest image and recreate the container
+  install     Pull the image, ask which host port to use, generate the
+              compose file, start the container, verify /health
+              (default if no subcommand given)
+  update      Pull the latest image and recreate the container,
+              keeping the same port and volumes as the previous install
   uninstall   Stop the container, remove volumes and install dir
               (asks before deleting the image)
-  status      Show container state, image, and a live health check
+  status      Show container state, image, host port, and a live health check
   start       Start an existing (stopped) container
   stop        Stop the container without removing it
   help        Show this message
 
+Port selection:
+  • install always asks which host port to use, with a smart default
+    (${DEFAULT_PORT} if free, or the next free port if ${DEFAULT_PORT} is taken).
+  • Pass --port N or set PORT=N to skip the prompt
+    (useful when piping curl | bash where stdin is not interactive).
+  • update / status / start / stop read the active port from the
+    generated compose file, so they stay in sync automatically.
+
 Install dir:    ${INSTALL_DIR}
 Image:          ${IMAGE}
-Health URL:     ${HEALTH_URL}
+Default port:   ${DEFAULT_PORT}  (DigiCode UI also targets this port)
+Health URL:     http://localhost:${current_port}/health
 
 Docs (5 langs): https://code.fablab-westharima.jp/docs/local-compile-server
 EOF
@@ -408,8 +619,38 @@ EOF
 # Entry point
 # ---------------------------------------------------------------------------
 
+# Parse `--port N` out of $@, leaving the subcommand at $1. The flag may
+# appear before or after the subcommand. PORT env var still wins; the flag
+# is just sugar for one-off interactive runs.
+parse_port_flag() {
+  local rest=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --port)
+        if [[ -z "${2:-}" ]]; then
+          err "--port requires an argument"
+          exit 1
+        fi
+        PORT="$2"
+        shift 2
+        ;;
+      --port=*)
+        PORT="${1#--port=}"
+        shift
+        ;;
+      *)
+        rest+=("$1")
+        shift
+        ;;
+    esac
+  done
+  PARSED_ARGS=("${rest[@]}")
+}
+
 main() {
-  local sub="${1:-install}"
+  PARSED_ARGS=()
+  parse_port_flag "$@"
+  local sub="${PARSED_ARGS[0]:-install}"
   case "$sub" in
     install)   cmd_install ;;
     update)    cmd_update ;;

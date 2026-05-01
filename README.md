@@ -3,10 +3,10 @@
 One-command installer for the DigiCode local compile-server
 (`ghcr.io/fablab-westharima/digicode-compile-api:latest`).
 
-> **Public mirror** of `fablab-westharima/digicode/scripts/local-compile/`
-> (the upstream lives in the private DigiCode monorepo).
-
-License: MIT — see [LICENSE](./LICENSE).
+> **Public mirror** of
+> [`fablab-westharima/digicode/scripts/local-compile/`](https://github.com/fablab-westharima/digicode-installer)
+> — the upstream lives in the private DigiCode monorepo; this repo is
+> updated by hand when the upstream changes (license: MIT).
 
 ---
 
@@ -15,8 +15,18 @@ License: MIT — see [LICENSE](./LICENSE).
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fablab-westharima/digicode-installer/main/install.sh | bash
+# preferred — keeps stdin attached so the installer can prompt for the port
+bash <(curl -fsSL https://raw.githubusercontent.com/fablab-westharima/digicode-installer/main/install.sh)
 ```
+
+```bash
+# non-interactive (no port prompt) — pin the port up front
+PORT=3001 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fablab-westharima/digicode-installer/main/install.sh)"
+```
+
+> `curl ... | bash` also works in **non-interactive** mode only — if you
+> use it, set `PORT=N` first; otherwise the installer aborts with
+> instructions because `read` cannot reach a terminal.
 
 ### Windows (PowerShell)
 
@@ -24,15 +34,29 @@ curl -fsSL https://raw.githubusercontent.com/fablab-westharima/digicode-installe
 irm https://raw.githubusercontent.com/fablab-westharima/digicode-installer/main/install.ps1 | iex
 ```
 
+```powershell
+# non-interactive (no port prompt)
+$env:PORT = 3001
+irm https://raw.githubusercontent.com/fablab-westharima/digicode-installer/main/install.ps1 | iex
+```
+
 That's it. The script:
 
 1. Checks Docker is installed (prints OS-specific download URL if not, then exits)
 2. Checks Docker daemon is running
-3. Writes `~/.digicode/compile-server/docker-compose.yml`
-4. Pulls `ghcr.io/fablab-westharima/digicode-compile-api:latest` (~1 GB compressed)
-5. Starts the container on `localhost:3001` with persistent named volumes
-6. Verifies `http://localhost:3001/health` returns `{"status":"ok"}`
-7. Prints the next step (toggle DigiCode → 「ローカルサーバー」)
+3. **Asks which host port to use** (default 3001, or the next free port if
+   3001 is taken — Enter to accept, type a custom port, or `q` to abort)
+4. Writes `~/.digicode/compile-server/docker-compose.yml`
+5. Pulls `ghcr.io/fablab-westharima/digicode-compile-api:latest` (~1 GB compressed)
+6. Starts the container on the chosen port with persistent named volumes
+7. Verifies `http://localhost:<port>/health` returns `{"status":"ok"}`
+8. Prints the next step (toggle DigiCode → 「ローカルサーバー」)
+
+> ⚠️ DigiCode's UI 「ローカルサーバー」 toggle currently hard-codes
+> `http://localhost:3001`. If you pick a different port, the toggle
+> won't see the server until the frontend port-setting UI ships
+> (post-MVP). The installer prints this warning at the end of install
+> when port ≠ 3001.
 
 ---
 
@@ -53,30 +77,54 @@ That's it. The script:
 ## Subcommands
 
 ```bash
-bash install.sh [subcommand]
+bash install.sh [subcommand] [--port N]
 # or on Windows:
-.\install.ps1 [subcommand]
+.\install.ps1 [subcommand] [-Port N]
 ```
 
-| Subcommand     | Action                                                                     |
-| -------------- | -------------------------------------------------------------------------- |
-| `install`      | (default) pull image, start container, wait for `/health` to come up       |
-| `update`       | pull latest image and recreate the container                               |
-| `uninstall`    | stop + remove container, delete volumes and install dir (asks for image)   |
-| `status`       | show container state, image, and a live health check                       |
-| `start`        | start an existing (stopped) container                                      |
-| `stop`         | stop the container without removing it                                     |
-| `help`         | show built-in usage                                                        |
+| Subcommand     | Action                                                                          |
+| -------------- | ------------------------------------------------------------------------------- |
+| `install`      | (default) prompt for port, pull image, start container, wait for `/health`      |
+| `update`       | pull latest image and recreate the container (keeps the previous port)          |
+| `uninstall`    | stop + remove container, delete volumes and install dir (asks for image)        |
+| `status`       | show container state, image, host port, and a live health check                 |
+| `start`        | start an existing (stopped) container                                           |
+| `stop`         | stop the container without removing it                                          |
+| `help`         | show built-in usage                                                             |
+
+`update` / `status` / `start` / `stop` read the active host port from the
+generated `docker-compose.yml`, so they don't need a port argument.
+
+### Port selection
+
+`install` always asks which host port to expose, with a smart default:
+
+- If port `3001` is **free**: default = `3001` (just press Enter)
+- If port `3001` is **in use**: the installer surfaces who's using it
+  (best-effort) and suggests the next free port (e.g., `3002`)
+
+To skip the prompt (for `curl | bash` / `irm | iex` pipelines, or for CI):
+
+```bash
+PORT=3001 bash install.sh                 # env var
+bash install.sh install --port 3001       # CLI flag
+```
+
+```powershell
+$env:PORT = 3001; .\install.ps1           # env var
+.\install.ps1 install -Port 3001          # named param
+```
 
 ### Examples
 
 ```bash
-bash install.sh             # first-time install
-bash install.sh status      # is it running and healthy?
-bash install.sh update      # pull a new image and restart
-bash install.sh stop        # stop without losing the cache
-bash install.sh start       # bring it back up
-bash install.sh uninstall   # nuke everything (asks twice)
+bash install.sh                       # first-time install (prompts for port)
+bash install.sh install --port 3005   # pin a specific port, no prompt
+bash install.sh status                # is it running and healthy?
+bash install.sh update                # pull a new image and restart
+bash install.sh stop                  # stop without losing the cache
+bash install.sh start                 # bring it back up
+bash install.sh uninstall             # nuke everything (asks twice)
 ```
 
 ---
@@ -153,16 +201,15 @@ with the log excerpt.
 
 ### Port 3001 already in use
 
-Some other app holds 3001. Either stop it, or temporarily edit the generated
-`~/.digicode/compile-server/docker-compose.yml` to map a different host port:
+The installer detects this and asks for an alternate port — accept the
+suggested next-free port (e.g., 3002) or type your own. The compose file
+will be generated with that port automatically.
 
-```yaml
-ports:
-  - "3002:3001"
-```
-
-…then run `bash install.sh start`. (Note: DigiCode's "ローカルサーバー" toggle
-hard-codes port 3001 today; pointing it elsewhere is a planned follow-up.)
+**Caveat:** DigiCode's "ローカルサーバー" toggle in the UI currently
+hard-codes port 3001. If you pick a different port, the toggle won't
+reach this server until the frontend port-setting UI ships (post-MVP);
+the installer prints a warning when this happens. Free port 3001 (kill
+whoever holds it) and re-install if you need the toggle to work today.
 
 ### Apple Silicon: ESP32 builds slow
 
