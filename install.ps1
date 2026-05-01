@@ -104,10 +104,18 @@ function Detect-Lang {
 $Script:MessagesEn = @{
     docker_not_found             = 'Docker not found in PATH.'
     docker_required              = 'DigiCode local compile-server requires Docker Desktop.'
-    docker_install_prompt        = 'Please install Docker for Windows and re-run this script:'
-    docker_desktop_windows       = 'Docker Desktop for Windows'
+    docker_install_prompt        = 'Install Docker Desktop and re-run this script:'
+    docker_store_recommended     = 'Microsoft Store (recommended)'
+    docker_store_search_hint     = 'Search "Docker Desktop" in the Microsoft Store and click Install.'
+    docker_store_publisher_check = 'Verify publisher is "Docker Inc" before installing.'
+    docker_store_why             = 'No subprocess windows during install + automatic updates.'
+    docker_direct_exe            = 'Direct installer (.exe)'
     docker_wsl2_hint             = '(WSL2 backend recommended; the installer will guide you.)'
-    docker_alternatives          = 'Alternatives (lightweight, OSS):'
+    docker_direct_warning        = 'IMPORTANT: do not close any window the installer opens until it finishes — closing a spawned subprocess mid-install can leave C:\ProgramData\DockerDesktop in a broken state.'
+    docker_alternatives          = 'Lightweight / OSS alternatives:'
+    docker_troubleshoot_title    = 'If you hit "ProgramData\DockerDesktop must be owned by an elevated account":'
+    docker_troubleshoot_hint     = 'Open Admin PowerShell, run the 4 commands below, then re-run the installer:'
+    docker_troubleshoot_docs     = 'Full guide: https://code.fablab-westharima.jp/docs/local-compile-server'
     docker_not_running           = 'Docker is installed but not running.'
     docker_start_windows         = 'Start Docker Desktop from the Start menu, wait until the whale icon settles, then re-run this script.'
     docker_compose_missing       = "Neither 'docker compose' nor 'docker-compose' is available."
@@ -207,10 +215,18 @@ $Script:MessagesEn = @{
 $Script:MessagesJa = @{
     docker_not_found             = 'Docker が PATH 上に見つかりません。'
     docker_required              = 'DigiCode のローカルコンパイルサーバーには Docker Desktop が必要です。'
-    docker_install_prompt        = '下記から Docker for Windows をインストールしてからこのスクリプトを再実行してください:'
-    docker_desktop_windows       = 'Docker Desktop for Windows'
+    docker_install_prompt        = 'Docker Desktop をインストールしてからこのスクリプトを再実行してください:'
+    docker_store_recommended     = 'Microsoft Store (推奨)'
+    docker_store_search_hint     = 'Microsoft Store で「Docker Desktop」を検索して「インストール」をクリック。'
+    docker_store_publisher_check = '発行元が「Docker Inc」であることを必ず確認してから install してください。'
+    docker_store_why             = 'install 中に追加 window が出ない + 自動更新あり (一般 user 推奨)。'
+    docker_direct_exe            = '直接 install (.exe)'
     docker_wsl2_hint             = '(WSL2 バックエンド推奨。インストーラーが案内します。)'
-    docker_alternatives          = '代替手段 (軽量・OSS):'
+    docker_direct_warning        = '重要: インストーラーが開くすべての window は install 完了まで閉じないでください — 途中で window を閉じると C:\ProgramData\DockerDesktop が壊れた状態で残ります。'
+    docker_alternatives          = '軽量 / OSS 代替:'
+    docker_troubleshoot_title    = '「ProgramData\DockerDesktop must be owned by an elevated account」エラー時:'
+    docker_troubleshoot_hint     = '管理者 PowerShell で下記 4 行を実行してから installer を再実行してください:'
+    docker_troubleshoot_docs     = '詳細ガイド: https://code.fablab-westharima.jp/docs/local-compile-server'
     docker_not_running           = 'Docker はインストール済みですが起動していません。'
     docker_start_windows         = 'スタートメニューから Docker Desktop を起動し、鯨アイコンが安定するまで待ってからこのスクリプトを再実行してください。'
     docker_compose_missing       = "'docker compose' も 'docker-compose' も見つかりません。"
@@ -510,13 +526,36 @@ function Require-Docker {
     Write-Host (T 'docker_required') -ForegroundColor Cyan
     Write-Host (T 'docker_install_prompt')
     Write-Host ''
-    Write-Host ('  • ' + (T 'docker_desktop_windows')) -ForegroundColor Cyan
+    # Recommend the Store install first — it's MSIX-managed, doesn't spawn
+    # the cmd/PowerShell subprocess windows that beginners tend to close
+    # accidentally, and auto-updates. The direct .exe install is kept as
+    # an explicit alternative with a strong warning about not closing
+    # spawned windows mid-install (the failure mode that produced the
+    # "ProgramData/DockerDesktop must be owned by an elevated account"
+    # error documented under "Troubleshooting" below).
+    Write-Host ('  🥇 ' + (T 'docker_store_recommended')) -ForegroundColor Green
+    Write-Host ('      ' + (T 'docker_store_search_hint'))
+    Write-Host ('      ' + (T 'docker_store_publisher_check'))
+    Write-Host ('      ' + (T 'docker_store_why')) -ForegroundColor DarkGray
+    Write-Host ''
+    Write-Host ('  • ' + (T 'docker_direct_exe')) -ForegroundColor Cyan
     Write-Host '      https://www.docker.com/products/docker-desktop/'
     Write-Host ('      ' + (T 'docker_wsl2_hint'))
+    Write-Host ('      ⚠️  ' + (T 'docker_direct_warning')) -ForegroundColor Yellow
     Write-Host ''
     Write-Host ('  • ' + (T 'docker_alternatives'))
     Write-Host '      - Rancher Desktop:  https://rancherdesktop.io/'
     Write-Host '      - Podman Desktop:   https://podman-desktop.io/'
+    Write-Host ''
+    Write-Host ('📋 ' + (T 'docker_troubleshoot_title')) -ForegroundColor Yellow
+    Write-Host ('   ' + (T 'docker_troubleshoot_hint'))
+    Write-Host ''
+    Write-Host '     Remove-Item "C:\ProgramData\DockerDesktop" -Recurse -Force'
+    Write-Host '     New-Item -ItemType Directory -Path "C:\ProgramData\DockerDesktop" -Force | Out-Null'
+    Write-Host '     icacls "C:\ProgramData\DockerDesktop" /setowner "*S-1-5-32-544" /T'
+    Write-Host '     icacls "C:\ProgramData\DockerDesktop" /grant "*S-1-5-32-544:(OI)(CI)F" /T'
+    Write-Host ''
+    Write-Host ('   ' + (T 'docker_troubleshoot_docs')) -ForegroundColor DarkGray
     Write-Host ''
     throw (T 'err_docker_not_installed')
 }
