@@ -375,7 +375,7 @@ function Cmd-Install {
     Write-Info "Writing compose file to $($Script:ComposeFile) (host port $($Script:Port))"
     Write-ComposeFile
 
-    Write-Info "Pulling $($Script:Image) (~1 GB compressed, ~3.8 GB extracted on first run)..."
+    Write-Info "Pulling $($Script:Image) (~2.1 GB compressed, ~8.8 GB extracted on first run)..."
     Invoke-DockerCompose -f $Script:ComposeFile pull
 
     Write-Info "Starting $($Script:ContainerName)..."

@@ -8,6 +8,7 @@ One-command installer for the DigiCode local compile-server
 > lives in the private DigiCode monorepo; this repo is updated by hand
 > when the upstream changes (license: MIT).
 
+License: MIT — see [LICENSE](./LICENSE).
 ---
 
 ## Quick install
@@ -47,7 +48,7 @@ That's it. The script:
 3. **Asks which host port to use** (default 3001, or the next free port if
    3001 is taken — Enter to accept, type a custom port, or `q` to abort)
 4. Writes `~/.digicode/compile-server/docker-compose.yml`
-5. Pulls `ghcr.io/fablab-westharima/digicode-compile-api:latest` (~1 GB compressed)
+5. Pulls `ghcr.io/fablab-westharima/digicode-compile-api:latest` (~2.1 GB compressed)
 6. Starts the container on the chosen port with persistent named volumes
 7. Verifies `http://localhost:<port>/health` returns `{"status":"ok"}`
 8. Prints the next step (toggle DigiCode → 「ローカルサーバー」)
@@ -66,9 +67,9 @@ That's it. The script:
   - Windows: [Docker Desktop](https://www.docker.com/products/docker-desktop/)
     (WSL2 backend; the installer guides you)
   - Linux: `docker.io` + `docker-compose-plugin` from your distro's package manager
-- **~4 GB** free disk for the image
-- A wired or fast wireless connection for the first pull (~1 GB compressed,
-  ~1–2 minutes on 100 Mbps fibre)
+- **~10 GB** free disk for the image
+- A wired or fast wireless connection for the first pull
+  (~2.1 GB compressed; ~3 minutes on 100 Mbps fibre, ~6 minutes on 50 Mbps)
 
 ---
 

@@ -452,7 +452,7 @@ cmd_install() {
   info "Writing compose file to ${COMPOSE_FILE} (host port ${PORT})"
   write_compose_file
 
-  info "Pulling ${IMAGE} (≈1 GB compressed, ≈3.8 GB extracted on first run)…"
+  info "Pulling ${IMAGE} (~2.1 GB compressed, ~8.8 GB extracted on first run)…"
   docker_compose -f "$COMPOSE_FILE" pull
 
   info "Starting ${CONTAINER_NAME}…"
