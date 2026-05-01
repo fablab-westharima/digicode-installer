@@ -25,7 +25,7 @@ readonly DEFAULT_PORT=3001
 readonly INSTALL_DIR="${HOME}/.digicode/compile-server"
 readonly COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
 readonly HEALTH_TIMEOUT_SEC=60
-readonly DIGICODE_UI_PORT=3001  # the port DigiCode's UI toggle hard-codes today
+readonly DIGICODE_UI_PORT=3001  # the DigiCode UI's default — no extra step needed when PORT matches
 
 # Resolved port for the running container — set by pick_port() during install
 # or by read_port_from_compose() for subsequent commands.
@@ -408,33 +408,27 @@ wait_for_health() {
   return 1
 }
 
-# Print the post-install summary, including a UI-mismatch warning when the
-# chosen port is not what DigiCode's "ローカルサーバー" toggle hard-codes.
+# Print the post-install summary. When the chosen port is not the
+# DigiCode UI's default (3001), the user has to set the matching port in
+# the frontend's "ローカルサーバー" port input — the installer reminds
+# them with the exact value to type.
 print_install_summary() {
   echo
   ok "${C_BOLD}DigiCode local compile-server is ready.${C_RESET}"
   echo
-
-  if (( PORT != DIGICODE_UI_PORT )); then
-    warn "${C_BOLD}DigiCode UI mismatch:${C_RESET}"
-    echo "    The 「ローカルサーバー」 toggle in DigiCode currently hard-codes"
-    echo "    http://localhost:${DIGICODE_UI_PORT}, but you chose port ${PORT}."
-    echo "    Until the frontend port-setting UI ships (post-MVP), the toggle"
-    echo "    won't reach this server. You can still call /api/compile directly:"
-    echo "      curl http://localhost:${PORT}/health"
-    echo "    Or free port ${DIGICODE_UI_PORT} (kill whoever holds it) and re-run"
-    echo "    'bash $0 uninstall' then 'bash $0 install' to switch back."
-    echo
-  fi
-
   echo "${C_BOLD}Next steps:${C_RESET}"
   echo "  1. Open DigiCode in your browser (https://code.fablab-westharima.jp)"
+  echo "  2. Open ${C_BOLD}コンパイル設定${C_RESET} (Compile Settings)"
+  echo "  3. Pick ${C_BOLD}ローカルサーバー${C_RESET} (Local Server)"
   if (( PORT == DIGICODE_UI_PORT )); then
-    echo "  2. Click the ▼ next to the「書き込み」button"
-    echo "  3. Select「ローカルサーバー」"
+    echo "     — the default port matches; nothing else to do."
   else
-    echo "  2. (UI integration unavailable on this port — see warning above)"
+    echo "  4. ${C_BOLD}Set ポート番号 (Port) to ${PORT}${C_RESET}"
+    echo "     so DigiCode talks to this server (the frontend persists this"
+    echo "     in localStorage for next time)."
   fi
+  echo
+  echo "${C_DIM}Sanity check:${C_RESET}  curl http://localhost:${PORT}/health"
   echo
   echo "${C_DIM}Manage the server:${C_RESET}"
   echo "  • Status:    bash $0 status"
@@ -608,7 +602,7 @@ Port selection:
 
 Install dir:    ${INSTALL_DIR}
 Image:          ${IMAGE}
-Default port:   ${DEFAULT_PORT}  (DigiCode UI also targets this port)
+Default port:   ${DEFAULT_PORT}  (also DigiCode UI's default; UI accepts custom ports)
 Health URL:     http://localhost:${current_port}/health
 
 Docs (5 langs): https://code.fablab-westharima.jp/docs/local-compile-server

@@ -41,7 +41,7 @@ $ErrorActionPreference = 'Stop'
 $Script:Image            = 'ghcr.io/fablab-westharima/digicode-compile-api:latest'
 $Script:ContainerName    = 'digicode-compile-api'
 $Script:DefaultPort      = 3001
-$Script:DigiCodeUiPort   = 3001  # the port DigiCode's UI toggle hard-codes today
+$Script:DigiCodeUiPort   = 3001  # the DigiCode UI's default - no extra step needed when Port matches
 $Script:InstallDir       = Join-Path $env:USERPROFILE '.digicode\compile-server'
 $Script:ComposeFile      = Join-Path $Script:InstallDir 'docker-compose.yml'
 $Script:HealthTimeoutSec = 60
@@ -341,27 +341,19 @@ function Write-InstallSummary {
     Write-Host ""
     Write-Ok "DigiCode local compile-server is ready."
     Write-Host ""
-
-    if ($Script:Port -ne $Script:DigiCodeUiPort) {
-        Write-Warn2 "DigiCode UI mismatch:"
-        Write-Host "    The [ローカルサーバー] toggle in DigiCode currently hard-codes"
-        Write-Host "    http://localhost:$($Script:DigiCodeUiPort), but you chose port $($Script:Port)."
-        Write-Host "    Until the frontend port-setting UI ships (post-MVP), the toggle"
-        Write-Host "    won't reach this server. You can still call /api/compile directly:"
-        Write-Host "      curl http://localhost:$($Script:Port)/health"
-        Write-Host "    Or free port $($Script:DigiCodeUiPort) and re-run"
-        Write-Host "    '.\install.ps1 uninstall' then '.\install.ps1 install' to switch back."
-        Write-Host ""
-    }
-
     Write-Host "Next steps:" -ForegroundColor Cyan
     Write-Host "  1. Open DigiCode in your browser (https://code.fablab-westharima.jp)"
+    Write-Host "  2. Open Compile Settings (コンパイル設定)"
+    Write-Host "  3. Pick Local Server (ローカルサーバー)"
     if ($Script:Port -eq $Script:DigiCodeUiPort) {
-        Write-Host "  2. Click the down-arrow next to the [書き込み] button"
-        Write-Host "  3. Select [ローカルサーバー]"
+        Write-Host "     - the default port matches; nothing else to do."
     } else {
-        Write-Host "  2. (UI integration unavailable on this port - see warning above)"
+        Write-Host "  4. Set Port (ポート番号) to $($Script:Port)"
+        Write-Host "     so DigiCode talks to this server (the frontend persists this"
+        Write-Host "     in localStorage for next time)."
     }
+    Write-Host ""
+    Write-Host "Sanity check:  curl http://localhost:$($Script:Port)/health" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "Manage the server:" -ForegroundColor DarkGray
     Write-Host "  - Status:    .\install.ps1 status"
@@ -533,7 +525,7 @@ Port selection:
 
 Install dir:    $($Script:InstallDir)
 Image:          $($Script:Image)
-Default port:   $($Script:DefaultPort)  (DigiCode UI also targets this port)
+Default port:   $($Script:DefaultPort)  (also DigiCode UI's default; UI accepts custom ports)
 Health URL:     http://localhost:$shownPort/health
 
 Docs (5 langs): https://code.fablab-westharima.jp/docs/local-compile-server

@@ -4,9 +4,9 @@ One-command installer for the DigiCode local compile-server
 (`ghcr.io/fablab-westharima/digicode-compile-api:latest`).
 
 > **Public mirror** of
-> [`fablab-westharima/digicode/scripts/local-compile/`](https://github.com/fablab-westharima/digicode-installer)
-> — the upstream lives in the private DigiCode monorepo; this repo is
-> updated by hand when the upstream changes (license: MIT).
+> `fablab-westharima/digicode/scripts/local-compile/` — the upstream
+> lives in the private DigiCode monorepo; this repo is updated by hand
+> when the upstream changes (license: MIT).
 
 ---
 
@@ -52,11 +52,9 @@ That's it. The script:
 7. Verifies `http://localhost:<port>/health` returns `{"status":"ok"}`
 8. Prints the next step (toggle DigiCode → 「ローカルサーバー」)
 
-> ⚠️ DigiCode's UI 「ローカルサーバー」 toggle currently hard-codes
-> `http://localhost:3001`. If you pick a different port, the toggle
-> won't see the server until the frontend port-setting UI ships
-> (post-MVP). The installer prints this warning at the end of install
-> when port ≠ 3001.
+> If you pick a port other than 3001, set the same port in DigiCode's
+> Compile Settings → Local Server → Port input. The frontend persists
+> this in `localStorage` so you only have to do it once per browser.
 
 ---
 
@@ -203,13 +201,12 @@ with the log excerpt.
 
 The installer detects this and asks for an alternate port — accept the
 suggested next-free port (e.g., 3002) or type your own. The compose file
-will be generated with that port automatically.
+is regenerated with that port automatically.
 
-**Caveat:** DigiCode's "ローカルサーバー" toggle in the UI currently
-hard-codes port 3001. If you pick a different port, the toggle won't
-reach this server until the frontend port-setting UI ships (post-MVP);
-the installer prints a warning when this happens. Free port 3001 (kill
-whoever holds it) and re-install if you need the toggle to work today.
+To make DigiCode talk to the new port, open **Compile Settings → Local
+Server → Port** in the DigiCode UI and type the same number. The
+frontend persists it in `localStorage`, so you only set it once. The
+installer prints the exact value to type in its post-install summary.
 
 ### Apple Silicon: ESP32 builds slow
 
