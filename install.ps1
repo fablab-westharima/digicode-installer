@@ -230,7 +230,7 @@ function Require-Docker {
     Write-Host "      - Rancher Desktop:  https://rancherdesktop.io/"
     Write-Host "      - Podman Desktop:   https://podman-desktop.io/"
     Write-Host ""
-    exit 1
+    throw "Docker is not installed."
 }
 
 function Require-DockerRunning {
@@ -244,7 +244,7 @@ function Require-DockerRunning {
     Write-Host "Start Docker Desktop from the Start menu, wait until the whale"
     Write-Host "icon settles, then re-run this script."
     Write-Host ""
-    exit 1
+    throw "Docker is not running."
 }
 
 # `docker compose` (plugin) vs the legacy `docker-compose` binary. Prefer
@@ -266,7 +266,7 @@ function Invoke-DockerCompose {
 
     Write-Err "Neither 'docker compose' nor 'docker-compose' is available."
     Write-Host "Install the Docker Compose plugin (bundled with recent Docker)."
-    exit 1
+    throw "docker compose plugin missing."
 }
 
 # ---------------------------------------------------------------------------
@@ -370,7 +370,7 @@ function Cmd-Install {
     Require-Docker
     Require-DockerRunning
 
-    if (-not (Pick-Port)) { exit 1 }
+    if (-not (Pick-Port)) { throw "Port selection failed." }
 
     Write-Info "Writing compose file to $($Script:ComposeFile) (host port $($Script:Port))"
     Write-ComposeFile
@@ -381,7 +381,7 @@ function Cmd-Install {
     Write-Info "Starting $($Script:ContainerName)..."
     Invoke-DockerCompose -f $Script:ComposeFile up -d
 
-    if (-not (Wait-ForHealth)) { exit 1 }
+    if (-not (Wait-ForHealth)) { throw "Health check failed." }
 
     Write-InstallSummary
 }
@@ -392,7 +392,7 @@ function Cmd-Update {
     if (-not (Test-Path $Script:ComposeFile)) {
         Write-Err "Compose file not found at $($Script:ComposeFile)."
         Write-Host "  Run '.\install.ps1 install' first."
-        exit 1
+        throw "Not installed."
     }
     Read-PortFromCompose
     Write-Info "Pulling latest image..."
@@ -478,7 +478,7 @@ function Cmd-Start {
     Require-DockerRunning
     if (-not (Test-Path $Script:ComposeFile)) {
         Write-Err "Compose file not found - run 'install' first."
-        exit 1
+        throw "Not installed."
     }
     Read-PortFromCompose
     Invoke-DockerCompose -f $Script:ComposeFile start
@@ -489,7 +489,7 @@ function Cmd-Stop {
     Require-Docker
     if (-not (Test-Path $Script:ComposeFile)) {
         Write-Err "Compose file not found - run 'install' first."
-        exit 1
+        throw "Not installed."
     }
     Invoke-DockerCompose -f $Script:ComposeFile stop
     Write-Ok "Stopped."
@@ -541,12 +541,24 @@ Docs (5 langs): https://code.fablab-westharima.jp/docs/local-compile-server
 # the user passed an explicit -Port value.
 if ($Port -gt 0) { $Script:Port = $Port }
 
-switch ($Subcommand) {
-    'install'   { Cmd-Install }
-    'update'    { Cmd-Update }
-    'uninstall' { Cmd-Uninstall }
-    'status'    { Cmd-Status }
-    'start'     { Cmd-Start }
-    'stop'      { Cmd-Stop }
-    'help'      { Cmd-Help }
+# When this script is fetched via `irm | iex`, calling `exit` terminates the
+# entire PowerShell host (the user's window closes before they can read the
+# error). We `throw` from the subcommands instead and pause here so the user
+# can see what went wrong before deciding what to do next.
+try {
+    switch ($Subcommand) {
+        'install'   { Cmd-Install }
+        'update'    { Cmd-Update }
+        'uninstall' { Cmd-Uninstall }
+        'status'    { Cmd-Status }
+        'start'     { Cmd-Start }
+        'stop'      { Cmd-Stop }
+        'help'      { Cmd-Help }
+    }
+} catch {
+    Write-Host ""
+    Write-Err $_.Exception.Message
+    Write-Host ""
+    Write-Host "(Press Enter to close this window.)" -ForegroundColor DarkGray
+    try { Read-Host | Out-Null } catch {}
 }
