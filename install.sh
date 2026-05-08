@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# DigiCode Installer - Local Compile Server Setup Scripts
+# Copyright (C) 2024-2026 DigiCo LLC
+#
+# Licensed under the GNU Affero General Public License version 3 or later.
+# See LICENSE file in the repository root for full terms.
+
 # DigiCode local compile-server installer (Mac / Linux).
 # https://github.com/fablab-westharima/digicode-installer
 #
