@@ -5,10 +5,10 @@ One-command installer for the DigiCode local compile-server
 
 > **Public mirror** of
 > `fablab-westharima/digicode/scripts/local-compile/` — the upstream
-> lives in the private DigiCode monorepo; this repo is updated by hand
-> when the upstream changes (license: MIT).
+> lives in the DigiCode monorepo; this repo is updated by hand
+> when the upstream changes (license: AGPL-3.0).
 
-License: MIT — see [LICENSE](./LICENSE).
+License: AGPL-3.0 — see [LICENSE](./LICENSE).
 ---
 
 ## Quick install
@@ -225,7 +225,11 @@ x86 emulation.
 ## Related docs
 
 - DigiCode user docs (5 languages):
-  `https://code.fablab-westharima.jp/docs/local-compile-server`
-- DigiCode source repo (private): `fablab-westharima/digicode`
-- Compile-api source: same repo, `compile-api/`
-- Plan doc: `prompt/maintenance/46_2026-05-01_ローカルコンパイルInstaller計画.md`
+  <https://code.fablab-westharima.jp/docs/local-compile-server>
+
+## DigiCode Ecosystem
+
+- [DigiCode](https://github.com/fablab-westharima/digicode) — Main repo: Blockly-based ESP32 firmware builder.
+- [digicode-compile-api](https://github.com/fablab-westharima/digicode-compile-api) — PlatformIO compile server (the Docker image this installer pulls).
+- [DigiCode-Finder](https://github.com/fablab-westharima/DigiCode-Finder) — mDNS device discovery helper for WiFi OTA.
+- [digicode-installer](https://github.com/fablab-westharima/digicode-installer) — This repo: One-command local install for end-users.
